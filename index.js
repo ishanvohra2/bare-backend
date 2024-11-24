@@ -1,83 +1,87 @@
 const express = require("express");
 const app = express();
 const dotEnv = require("dotenv");
-const bodyParser = require("body-parser");
 const cors = require("cors");
-const url = require("url");
 const Hyperswarm = require("hyperswarm");
 const goodbye = require("graceful-goodbye");
 const crypto = require("hypercore-crypto");
 const b4a = require("b4a");
-const fs = require("fs");
+
 dotEnv.config();
-
 app.use(cors());
-app.use(bodyParser.urlencoded({ extended: false }));
 
-let chat = "hi! how are you?";
-const connectPeers = (peerId) => {
-  const swarm = new Hyperswarm();
-  goodbye(() => swarm.destroy());
+// Global variables for managing peers and messages
+const peerConnections = {};
+const messageHistory = [];
 
-  // Keep track of all connections and console.log incoming data
-  const conns = [];
-  swarm.on("connection", (conn) => {
-    const name = b4a.toString(conn.remotePublicKey, "hex");
-    console.log("* got a connection from:", name, "*");
-    conns.push(conn);
-    conn.once("close", () => conns.splice(conns.indexOf(conn), 1));
-    conn.on("data", (data) => {
-      console.log(`${name}: ${data}`);
-      let msg = `${data}`;
-      let obj = { name, msg };
-      chat = msg;
-      fs.writeFileSync("message.txt",JSON.stringify(obj), (err) => {
-        if (err) console.log(err);
-      })
-    });
+// Create a single Hyperswarm instance
+const swarm = new Hyperswarm();
+goodbye(() => swarm.destroy());
+
+// Event listener for incoming peer connections
+swarm.on("connection", (conn) => {
+  const peerId = b4a.toString(conn.remotePublicKey, "hex");
+  console.log(`* Connected to peer: ${peerId} *`);
+
+  // Store the connection for broadcasting
+  peerConnections[peerId] = conn;
+
+  // Listen for incoming messages from this peer
+  conn.on("data", (data) => {
+    const msg = data.toString();
+    console.log(`${peerId}: ${msg}`);
+    
+    // Save to message history
+    messageHistory.push({ peerId, msg });
+    
+    // Broadcast the message to all connected peers
+    broadcastMessage(peerId, msg);
   });
 
-  // Broadcast stdin to all connections
-  process.stdin.on("data", (d) => {
-    for (const conn of conns) {
-      conn.write(d);
+  // Handle connection close
+  conn.once("close", () => {
+    console.log(`* Peer disconnected: ${peerId} *`);
+    delete peerConnections[peerId];
+  });
+});
+
+// Function to broadcast messages to all connected peers
+const broadcastMessage = (senderId, msg) => {
+  Object.entries(peerConnections).forEach(([peerId, conn]) => {
+    if (peerId !== senderId) {
+      conn.write(`${senderId}: ${msg}`);
     }
-  });
-
-  // Join a common topic
-  if (peerId) process.argv[2] = peerId
-
-  const topic = process.argv[2]
-    ? b4a.from(process.argv[2], "hex")
-    : crypto.randomBytes(32);
-  const discovery = swarm.join(topic, { client: true, server: true });
-
-  // The flushed promise will resolve when the topic has been fully announced to the DHT
-  discovery.flushed().then(() => {
-    console.log("joined topic:", b4a.toString(topic, "hex"));
-    fs.writeFileSync("peerId.txt", b4a.toString(topic, "hex"), (err) => {
-      if (err) console.log(err);
-    });
   });
 };
 
-app.get("/", (req, res) => {
-  res.json({ message: "All operational !" });
+// Generate a new peer ID and join the swarm
+app.get("/api/get-peer-id", (req, res) => {
+  const peerId = crypto.randomBytes(32);
+  const peerIdHex = b4a.toString(peerId, "hex");
+  const discovery = swarm.join(peerId, { client: true, server: true });
+
+  // Confirm the topic has been announced
+  discovery.flushed().then(() => {
+    console.log(`Peer ID ready: ${peerIdHex}`);
+    res.json({ peerId: peerIdHex });
+  });
 });
 
-app.get("/api/get-peer-id", async (req, res) => {
-  await connectPeers();
-  const topic = crypto.randomBytes(32);
-  let peerId = b4a.toString(topic, "hex");
-  res.json({id: peerId});
+// Connect to a peer using a peer ID
+app.get("/api/connect-peers", (req, res) => {
+  const { peerId } = req.query;
+  if (!peerId) return res.status(400).json({ error: "peerId is required" });
+
+  const topic = b4a.from(peerId, "hex");
+  swarm.join(topic, { client: true, server: true });
+
+  console.log(`Connecting to peer: ${peerId}`);
+  res.json({ message: `Attempting to connect to peer: ${peerId}` });
 });
 
-app.get("/api/connect-peers", async (req, res) => {
-  let {peerId, msg} = req.query;
-  peerId = fs.readFileSync("peerId.txt").toString();
-  await connectPeers(peerId,msg);
-  console.log(chat);
-  res.json({ msg: chat });
+// Get all messages sent/received
+app.get("/api/messages", (req, res) => {
+  res.json({ messages: messageHistory });
 });
 
 app.listen(process.env.SERVER_PORT, () => {
