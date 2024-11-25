@@ -53,6 +53,7 @@ const connectPeers = async (peerId, msg) => {
             "message.txt",
             JSON.stringify(messageObject, null, 2)
           );
+          messageEmitter.emit('newMessage', messageObject);
         } catch (error) {
           console.error("Error handling message:", error);
         }
@@ -132,6 +133,28 @@ app.get("/api/connect-peers", async (req, res) => {
       details: error.message 
     });
   }
+});
+
+const EventEmitter = require('events');
+const messageEmitter = new EventEmitter();
+
+app.get('/api/messages/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // Send initial message history
+  const sendMessage = (message) => {
+    res.write(`data: ${JSON.stringify(message)}\n\n`);
+  };
+
+  // Subscribe to new messages
+  messageEmitter.on('newMessage', sendMessage);
+
+  // Clean up on client disconnect
+  req.on('close', () => {
+    messageEmitter.removeListener('newMessage', sendMessage);
+  });
 });
 
 // Error handling middleware
