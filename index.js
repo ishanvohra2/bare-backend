@@ -146,9 +146,7 @@ app.get("/api/get-messages", async (req, res) => {
     const { peerId } = req.query;
     
     // Optional filtering by peerId
-    const filteredMessages = peerId
-      ? messageStore.messages.filter(m => m.peerId === peerId)
-      : messageStore.messages;
+    const filteredMessages = messageStore.messages;
 
     res.json({ 
       messages: filteredMessages,
